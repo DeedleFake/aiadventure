@@ -1,6 +1,8 @@
 AI Adventure
 ============
 
+> **Warning:** This project is in early development and should not be used.
+
 AI Adventure is an AI harness for playing AI-powered open-ended adventure games.
 
 ## Run
