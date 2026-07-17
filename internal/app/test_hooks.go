@@ -11,5 +11,12 @@ func ApplyChatDoneForTest(m Model, err error) Model {
 	return next.(Model)
 }
 
+// RefreshTranscriptForTest rebuilds the play transcript from the current session.
+// Used when tests mutate the session tree outside the normal Update path.
+func RefreshTranscriptForTest(m Model) Model {
+	m.refreshTranscript()
+	return m
+}
+
 // Ensure tea is referenced if only used for Model assertion in tests elsewhere.
 var _ tea.Model = Model{}

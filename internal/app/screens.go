@@ -4,39 +4,24 @@ package app
 type Screen int
 
 const (
-	ScreenHub Screen = iota
+	ScreenPlay Screen = iota
 	ScreenAuth
-	ScreenModel
-	ScreenEffort
 	ScreenSessions
-	ScreenNewSession
-	ScreenPlay
-	ScreenPlayMenu
 	ScreenPickTurn
 	ScreenTextForm
 	ScreenBranches
 	ScreenRevisePreview
 )
 
-// ScreenName returns a stable name for tests and diagnostics.
+// String returns a stable name for tests and diagnostics.
 func (s Screen) String() string {
 	switch s {
-	case ScreenHub:
-		return "hub"
-	case ScreenAuth:
-		return "auth"
-	case ScreenModel:
-		return "model"
-	case ScreenEffort:
-		return "effort"
-	case ScreenSessions:
-		return "sessions"
-	case ScreenNewSession:
-		return "new_session"
 	case ScreenPlay:
 		return "play"
-	case ScreenPlayMenu:
-		return "play_menu"
+	case ScreenAuth:
+		return "auth"
+	case ScreenSessions:
+		return "sessions"
 	case ScreenPickTurn:
 		return "pick_turn"
 	case ScreenTextForm:
@@ -50,46 +35,50 @@ func (s Screen) String() string {
 	}
 }
 
-// Hub items (cursor indices).
+// FocusArea is which pane accepts keyboard navigation on the play screen.
+type FocusArea int
+
 const (
-	hubSignIn = iota
-	hubSignOut
-	hubModel
-	hubNewSession
-	hubSessions
-	hubQuit
-	hubItemCount
+	FocusInput FocusArea = iota
+	FocusHistory
 )
 
-var hubLabels = []string{
-	"Sign in to xAI (OAuth)",
-	"Sign out",
-	"Select model / effort",
-	"New adventure session",
-	"Browse / search sessions",
-	"Quit",
+// String returns a stable focus name for tests.
+func (f FocusArea) String() string {
+	switch f {
+	case FocusInput:
+		return "input"
+	case FocusHistory:
+		return "history"
+	default:
+		return "unknown"
+	}
 }
 
-// Play menu actions.
+// Modal is a centered overlay on the main play surface.
+type Modal int
+
 const (
-	playActPhase = iota
-	playActEdit
-	playActRevise
-	playActFeedback
-	playActBranch
-	playActModel
-	playActBackHub
-	playActCount
+	ModalNone     Modal = iota
+	ModalSettings       // model list
+	ModalEffort         // effort for pending model
+	ModalRename         // rename current session
 )
 
-var playActLabels = []string{
-	"Toggle phase (brainstorm ↔ adventure)",
-	"Edit a prior turn (manual fork)",
-	"Revise AI turn with AI (fork)",
-	"Add out-of-band feedback",
-	"Switch branch",
-	"Change model / effort",
-	"Save & return to hub",
+// String returns a stable modal name for tests.
+func (m Modal) String() string {
+	switch m {
+	case ModalNone:
+		return "none"
+	case ModalSettings:
+		return "settings"
+	case ModalEffort:
+		return "effort"
+	case ModalRename:
+		return "rename"
+	default:
+		return "unknown"
+	}
 }
 
 // TextFormKind selects what a free-text form submits to.

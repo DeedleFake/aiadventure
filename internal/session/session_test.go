@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,26 @@ func TestNewSessionBrainstormPhase(t *testing.T) {
 	}
 	if s.ID == "" {
 		t.Fatal("expected non-empty id")
+	}
+}
+
+func TestAutoTitleFromText(t *testing.T) {
+	if got := session.AutoTitleFromText(""); got != session.DefaultTitle {
+		t.Fatalf("empty=%q", got)
+	}
+	if got := session.AutoTitleFromText("  hello world  "); got != "hello world" {
+		t.Fatalf("got=%q", got)
+	}
+	if got := session.AutoTitleFromText("line one\nline two"); got != "line one" {
+		t.Fatalf("first line=%q", got)
+	}
+	long := strings.Repeat("a", 80)
+	got := session.AutoTitleFromText(long)
+	if len([]rune(got)) > 60 {
+		t.Fatalf("too long: %q", got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("expected ellipsis: %q", got)
 	}
 }
 

@@ -17,40 +17,51 @@ The interactive app is a full-screen, keyboard-driven TUI (Bubble Tea).
 
 ## Features (initial version)
 
-- Sign in to xAI via device-code OAuth; choose model and reasoning effort when supported
-- Create adventure sessions (auto-saved/loaded under a configurable directory)
-- Brainstorming phase for worldbuilding, then adventure play (player actions → AI narration)
-- Edit prior AI or user turns (manual or AI-assisted revision); edits fork branches
-- All branches remain accessible; loading opens the most recently changed branch
-- Searchable session list
-- Out-of-band feedback notes that guide future AI replies without rewriting story turns
+- Starts on an empty new session (nothing is saved until the first message)
+- Sessions auto-name from the first user message; rename anytime with `/rename`
+- Slash commands with fuzzy search for every app feature (settings, sessions, phase, …)
+- Settings (model / effort) open as a centered modal over the play screen
+- Tab switches focus between the message input and selectable history turns
+- Sign in to xAI via device-code OAuth
+- Brainstorming phase for worldbuilding, then adventure play
+- Edit prior turns (manual or AI-assisted); edits fork branches
+- Searchable session list; out-of-band feedback for future AI replies
 
 ## TUI keyboard map
 
-### Hub
+### Play (main screen)
 | Key | Action |
 |-----|--------|
-| ↑/↓ or j/k | Move |
-| Enter | Select |
-| q / Esc | Quit |
-
-### Session browser
-| Key | Action |
-|-----|--------|
-| ↑/↓ | Move |
-| Enter | Open session |
-| `/` | Search/filter |
-| n | New session |
-| Esc | Back to hub |
-
-### Play
-| Key | Action |
-|-----|--------|
-| Enter | Send message to AI |
-| Ctrl+A | Session actions (phase, edit, revise, feedback, branch, model) |
+| Enter | Send message, or run slash command |
+| `/…` | Slash commands; fuzzy list appears above the prompt |
+| Tab | Toggle focus: input ↔ history |
+| ↑/↓ | Navigate slash palette or history selection |
 | Ctrl+U | Clear input |
-| Esc | Save and return to hub |
+| Esc | Clear input / close palette; cancel overlays |
 | PgUp/PgDn | Scroll transcript |
+
+### History focus
+| Key | Action |
+|-----|--------|
+| ↑/↓ | Select a turn |
+| Enter | Edit selected turn (manual fork form) |
+| Tab / Esc | Return to input |
+
+### Slash commands
+| Command | Action |
+|---------|--------|
+| `/rename [title]` | Rename session (modal if no title given) |
+| `/settings` / `/model` | Settings modal (model / effort) |
+| `/sessions` | Browse / search / open sessions |
+| `/new` | Start a new empty unsaved session |
+| `/phase` | Toggle brainstorm ↔ adventure |
+| `/edit` | Edit selected (or pick) turn |
+| `/revise` | AI-revise selected assistant turn |
+| `/feedback` | Add out-of-band feedback |
+| `/branch` | Switch branch |
+| `/signin` / `/signout` | OAuth auth |
+| `/help` | List commands |
+| `/quit` | Exit |
 
 ### Multi-line forms (edit / feedback / revise instruction)
 | Key | Action |

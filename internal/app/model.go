@@ -26,10 +26,11 @@ type Model struct {
 	status string
 	errMsg string
 
-	// Hub
-	hubCursor int
+	// Focus / modal overlays on play
+	focus FocusArea
+	modal Modal
 
-	// Model / effort pickers
+	// Model / effort pickers (settings modal)
 	modelCursor  int
 	effortCursor int
 	pendingModel xai.Model
@@ -40,15 +41,22 @@ type Model struct {
 	searchMode  bool
 	searchInput textinput.Model
 	filterQuery string
-	titleInput  textinput.Model
 
 	// Play
-	session     *session.Session
-	playInput   textinput.Model
-	transcript  viewport.Model
-	playMenuCur int
-	busy        bool
-	busyLabel   string
+	session          *session.Session
+	sessionPersisted bool // true once written to disk (after first user submit)
+	playInput        textinput.Model
+	transcript       viewport.Model
+	busy             bool
+	busyLabel        string
+	histCursor       int // selected turn index on ActivePath when FocusHistory
+
+	// Slash palette (when play input starts with /)
+	slashMatches []SlashMatch
+	slashCursor  int
+
+	// Rename modal
+	titleInput textinput.Model
 
 	// Pick turn / text form / branches / revise
 	pickTurns     []session.Turn
@@ -77,7 +85,7 @@ type branchRow struct {
 	Active  bool
 }
 
-// NewModel constructs the initial TUI model.
+// NewModel constructs the initial TUI model on an empty, unsaved session.
 func NewModel(deps *Deps, ctx context.Context) Model {
 	if ctx == nil {
 		ctx = context.Background()
@@ -93,7 +101,7 @@ func NewModel(deps *Deps, ctx context.Context) Model {
 	ti.Width = 40
 
 	pi := textinput.New()
-	pi.Placeholder = "Type a message and press Enter…"
+	pi.Placeholder = "Message, or / for commands…  (Tab: history)"
 	pi.CharLimit = 4000
 	pi.Width = 60
 
@@ -106,10 +114,12 @@ func NewModel(deps *Deps, ctx context.Context) Model {
 
 	vp := viewport.New(80, 20)
 
-	return Model{
+	m := Model{
 		deps:        deps,
 		ctx:         ctx,
-		screen:      ScreenHub,
+		screen:      ScreenPlay,
+		focus:       FocusInput,
+		modal:       ModalNone,
 		width:       80,
 		height:      24,
 		searchInput: si,
@@ -118,19 +128,43 @@ func NewModel(deps *Deps, ctx context.Context) Model {
 		formArea:    fa,
 		transcript:  vp,
 	}
+	m.startNewSession()
+	m.playInput.Focus()
+	m.refreshTranscript()
+	return m
+}
+
+func (m *Model) startNewSession() {
+	model, effort := "", ""
+	if m.deps != nil {
+		model, effort = m.deps.Cfg.Model, m.deps.Cfg.Effort
+	}
+	m.session = session.New("", model, effort)
+	m.sessionPersisted = false
+	m.histCursor = 0
+	m.focus = FocusInput
+	m.modal = ModalNone
+	m.playInput.SetValue("")
+	m.clearSlashPalette()
 }
 
 // Screen returns the active screen (for tests).
 func (m Model) Screen() Screen { return m.screen }
 
-// HubCursor returns the hub selection index (for tests).
-func (m Model) HubCursor() int { return m.hubCursor }
+// Focus returns the play focus area (for tests).
+func (m Model) Focus() FocusArea { return m.focus }
+
+// ModalKind returns the active modal (for tests).
+func (m Model) ModalKind() Modal { return m.modal }
 
 // Busy reports whether an async op is running.
 func (m Model) Busy() bool { return m.busy }
 
 // Session returns the open play session, if any.
 func (m Model) Session() *session.Session { return m.session }
+
+// SessionPersisted reports whether the current session has been saved to disk.
+func (m Model) SessionPersisted() bool { return m.sessionPersisted }
 
 // Sessions returns the browser list (for tests).
 func (m Model) Sessions() []session.Summary { return m.sessions }
@@ -140,6 +174,27 @@ func (m Model) FormValue() string { return m.formArea.Value() }
 
 // TranscriptView returns the transcript viewport content (for tests).
 func (m Model) TranscriptView() string { return m.transcript.View() }
+
+// HistCursor returns the selected history index (for tests).
+func (m Model) HistCursor() int { return m.histCursor }
+
+// SlashMatches returns the current fuzzy command palette (for tests).
+func (m Model) SlashMatches() []SlashMatch { return m.slashMatches }
+
+// SlashCursor returns the palette selection index (for tests).
+func (m Model) SlashCursor() int { return m.slashCursor }
+
+// SelectedHistoryTurn returns the turn under histCursor, if any.
+func (m Model) SelectedHistoryTurn() (session.Turn, bool) {
+	if m.session == nil {
+		return session.Turn{}, false
+	}
+	path := m.session.ActivePath()
+	if m.histCursor < 0 || m.histCursor >= len(path) {
+		return session.Turn{}, false
+	}
+	return path[m.histCursor], true
+}
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
@@ -184,6 +239,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authWaiting = false
 		m.status = "Signed in successfully"
 		m.errMsg = ""
+		m.screen = ScreenPlay
+		m.playInput.Focus()
 		return m, nil
 
 	case sessionsLoadedMsg:
@@ -195,9 +252,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionOpenedMsg:
 		m.session = msg.Session
+		m.sessionPersisted = true
 		m.screen = ScreenPlay
+		m.focus = FocusInput
+		m.modal = ModalNone
 		m.playInput.SetValue("")
 		m.playInput.Focus()
+		m.clearSlashPalette()
+		path := m.session.ActivePath()
+		if len(path) > 0 {
+			m.histCursor = len(path) - 1
+		} else {
+			m.histCursor = 0
+		}
 		m.refreshTranscript()
 		m.status = fmt.Sprintf("Opened %s", msg.Session.Title)
 		return m, nil
@@ -207,6 +274,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busyLabel = ""
 		// Always refresh: SendUserMessage may already have appended+saved the
 		// user turn before the AI call failed; the view must match session/disk.
+		if m.session != nil && !m.sessionPersisted {
+			// First submit path always saves the user turn before the AI call.
+			m.sessionPersisted = true
+		}
 		m.refreshTranscript()
 		if msg.Err != nil {
 			m.errMsg = msg.Err.Error()
@@ -214,6 +285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			m.status = "AI replied"
 		}
+		m.focus = FocusInput
 		m.playInput.Focus()
 		return m, nil
 
@@ -238,11 +310,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.searchMode {
 			m.searchInput, cmd = m.searchInput.Update(msg)
 		}
-	case ScreenNewSession:
-		m.titleInput, cmd = m.titleInput.Update(msg)
 	case ScreenPlay:
-		if !m.busy {
+		if m.modal == ModalRename {
+			m.titleInput, cmd = m.titleInput.Update(msg)
+		} else if m.modal == ModalNone && m.focus == FocusInput && !m.busy {
 			m.playInput, cmd = m.playInput.Update(msg)
+			m.syncSlashPalette()
 		}
 	case ScreenTextForm:
 		m.formArea, cmd = m.formArea.Update(msg)
@@ -272,6 +345,51 @@ func (m *Model) openForm(kind TextFormKind, initial string) {
 	m.formArea.Focus()
 	m.formArea.CursorEnd()
 	m.screen = ScreenTextForm
+	m.modal = ModalNone
+}
+
+func (m *Model) clearSlashPalette() {
+	m.slashMatches = nil
+	m.slashCursor = 0
+}
+
+func (m *Model) syncSlashPalette() {
+	val := m.playInput.Value()
+	if !strings.HasPrefix(val, "/") {
+		m.clearSlashPalette()
+		return
+	}
+	name, _, _ := ParseSlashInput(val)
+	// While typing the command token only, filter on name; if args started, still show match for name.
+	m.slashMatches = FuzzyFilterSlash(name)
+	if m.slashCursor >= len(m.slashMatches) {
+		m.slashCursor = max(0, len(m.slashMatches)-1)
+	}
+}
+
+func (m *Model) slashPaletteActive() bool {
+	return m.screen == ScreenPlay && m.modal == ModalNone && m.focus == FocusInput &&
+		strings.HasPrefix(m.playInput.Value(), "/")
+}
+
+// saveSession writes the session when it has already been persisted (or force first write).
+func (m *Model) saveSession() error {
+	if m.session == nil {
+		return nil
+	}
+	if err := m.deps.Store.Save(m.session); err != nil {
+		return err
+	}
+	m.sessionPersisted = true
+	return nil
+}
+
+// saveSessionIfPersisted saves only when the session is already on disk.
+func (m *Model) saveSessionIfPersisted() {
+	if m.session == nil || !m.sessionPersisted {
+		return
+	}
+	_ = m.deps.Store.Save(m.session)
 }
 
 func (m *Model) refreshTranscript() {
@@ -282,16 +400,29 @@ func (m *Model) refreshTranscript() {
 	var b strings.Builder
 	path := m.session.ActivePath()
 	if len(path) == 0 {
-		b.WriteString("No turns yet.\n\nDescribe the adventure you want to create (brainstorm),\nor open the action menu (Ctrl+A) to change phase.\n")
+		b.WriteString("No turns yet.\n\nDescribe the adventure you want to create,\nor type / for commands (e.g. /settings, /phase).\n")
 	} else {
-		for _, t := range path {
+		for i, t := range path {
 			who := "You"
 			if t.Role == session.RoleAssistant {
 				who = "AI"
 			}
+			cursor := "  "
+			if m.focus == FocusHistory && i == m.histCursor {
+				cursor = "> "
+			} else if m.focus == FocusHistory {
+				cursor = "  "
+			}
+			preview := t.Content
+			// Keep multi-line content; indent continuation lines lightly in selection mode.
+			b.WriteString(cursor)
 			b.WriteString(who)
 			b.WriteString(": ")
-			b.WriteString(t.Content)
+			if m.focus == FocusHistory && i == m.histCursor {
+				b.WriteString(selStyle.Render(preview))
+			} else {
+				b.WriteString(preview)
+			}
 			b.WriteString("\n\n")
 		}
 	}
@@ -302,7 +433,9 @@ func (m *Model) refreshTranscript() {
 		fmt.Fprintf(&b, "— %d branches (tip %s) —\n", len(tips), shortID(m.session.ActiveTipID))
 	}
 	m.transcript.SetContent(b.String())
-	m.transcript.GotoBottom()
+	if m.focus != FocusHistory {
+		m.transcript.GotoBottom()
+	}
 }
 
 func shortID(id string) string {
@@ -323,6 +456,7 @@ var (
 	headerStyle = lipgloss.NewStyle().BorderBottom(true).BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
 	footerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	boxStyle    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("63")).Padding(0, 1)
+	modalStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("212")).Padding(1, 2).Background(lipgloss.Color("235"))
 )
 
 // View implements tea.Model.
@@ -332,22 +466,12 @@ func (m Model) View() string {
 	}
 	var body string
 	switch m.screen {
-	case ScreenHub:
-		body = m.viewHub()
 	case ScreenAuth:
 		body = m.viewAuth()
-	case ScreenModel:
-		body = m.viewModel()
-	case ScreenEffort:
-		body = m.viewEffort()
 	case ScreenSessions:
 		body = m.viewSessions()
-	case ScreenNewSession:
-		body = m.viewNewSession()
 	case ScreenPlay:
 		body = m.viewPlay()
-	case ScreenPlayMenu:
-		body = m.viewPlayMenu()
 	case ScreenPickTurn:
 		body = m.viewPickTurn()
 	case ScreenTextForm:
@@ -371,7 +495,37 @@ func (m Model) View() string {
 	if m.busy {
 		status += dimStyle.Render("… "+m.busyLabel) + "\n"
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, header, status, body, footer)
+
+	main := lipgloss.JoinVertical(lipgloss.Left, header, status, body, footer)
+
+	if m.screen == ScreenPlay && m.modal != ModalNone {
+		return m.renderWithCenteredModal(main)
+	}
+	return main
+}
+
+func (m Model) renderWithCenteredModal(base string) string {
+	var content string
+	switch m.modal {
+	case ModalSettings:
+		content = m.viewSettingsModal()
+	case ModalEffort:
+		content = m.viewEffortModal()
+	case ModalRename:
+		content = m.viewRenameModal()
+	default:
+		return base
+	}
+	boxW := min(60, max(30, m.width-8))
+	box := modalStyle.Width(boxW).Render(content)
+	// Layer centered modal over the main session surface (backdrop remains visible).
+	return lipgloss.Place(
+		m.width, max(m.height, lipgloss.Height(base)),
+		lipgloss.Center, lipgloss.Center,
+		box,
+		lipgloss.WithWhitespaceChars(" "),
+		lipgloss.WithWhitespaceForeground(lipgloss.Color("238")),
+	) + "\n" + dimStyle.Render("── session underneath ──") + "\n" + base
 }
 
 func (m Model) viewHeader() string {
@@ -392,24 +546,29 @@ func (m Model) viewFooter() string {
 }
 
 func (m Model) footerHelp() string {
+	if m.screen == ScreenPlay {
+		switch m.modal {
+		case ModalSettings, ModalEffort:
+			return "↑/↓ move  ·  enter select  ·  esc close"
+		case ModalRename:
+			return "type title  ·  enter save  ·  esc cancel"
+		}
+		if m.focus == FocusHistory {
+			return "↑/↓ select turn  ·  enter edit  ·  tab input  ·  /cmd  ·  esc input"
+		}
+		if m.slashPaletteActive() {
+			return "↑/↓ commands  ·  enter run  ·  tab history  ·  esc clear"
+		}
+		return "enter send  ·  / commands  ·  tab history  ·  ctrl+u clear"
+	}
 	switch m.screen {
-	case ScreenHub:
-		return "↑/↓ move  ·  enter select  ·  q quit"
 	case ScreenAuth:
 		return "enter start sign-in  ·  esc back"
-	case ScreenModel, ScreenEffort:
-		return "↑/↓ move  ·  enter select  ·  esc back"
 	case ScreenSessions:
 		if m.searchMode {
 			return "type to filter  ·  enter apply  ·  esc cancel search"
 		}
 		return "↑/↓ move  ·  enter open  ·  / search  ·  n new  ·  esc back"
-	case ScreenNewSession:
-		return "type title  ·  enter create  ·  esc cancel"
-	case ScreenPlay:
-		return "enter send  ·  ctrl+a actions  ·  ctrl+u clear input  ·  esc hub"
-	case ScreenPlayMenu:
-		return "↑/↓ move  ·  enter select  ·  esc cancel"
 	case ScreenPickTurn, ScreenBranches:
 		return "↑/↓ move  ·  enter select  ·  esc cancel"
 	case ScreenTextForm:
@@ -417,26 +576,8 @@ func (m Model) footerHelp() string {
 	case ScreenRevisePreview:
 		return "y apply  ·  n discard  ·  esc discard"
 	default:
-		return "esc back  ·  q quit"
+		return "esc back  ·  ctrl+c quit"
 	}
-}
-
-func (m Model) viewHub() string {
-	var b strings.Builder
-	b.WriteString(dimStyle.Render("Sessions: "+m.deps.Cfg.SessionsDir) + "\n\n")
-	b.WriteString("Main menu\n\n")
-	for i, label := range hubLabels {
-		cursor := "  "
-		line := itemStyle.Render(label)
-		if i == m.hubCursor {
-			cursor = "> "
-			line = selStyle.Render(" " + label + " ")
-		}
-		b.WriteString(cursor)
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 func (m Model) viewAuth() string {
@@ -455,9 +596,9 @@ func (m Model) viewAuth() string {
 	return b.String()
 }
 
-func (m Model) viewModel() string {
+func (m Model) viewSettingsModal() string {
 	var b strings.Builder
-	b.WriteString("Select model\n\n")
+	b.WriteString(titleStyle.Render("Settings — Select model") + "\n\n")
 	for i, mod := range xai.Catalog {
 		label := fmt.Sprintf("%s (%s)", mod.Name, mod.ID)
 		if mod.SupportsEffort {
@@ -477,9 +618,9 @@ func (m Model) viewModel() string {
 	return b.String()
 }
 
-func (m Model) viewEffort() string {
+func (m Model) viewEffortModal() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Effort for %s\n\n", m.pendingModel.ID))
+	b.WriteString(titleStyle.Render(fmt.Sprintf("Settings — Effort for %s", m.pendingModel.ID)) + "\n\n")
 	for i, e := range m.pendingModel.EffortOptions {
 		label := e
 		if e == m.pendingModel.DefaultEffort {
@@ -496,6 +637,10 @@ func (m Model) viewEffort() string {
 	return b.String()
 }
 
+func (m Model) viewRenameModal() string {
+	return titleStyle.Render("Rename session") + "\n\nTitle: " + m.titleInput.View() + "\n"
+}
+
 func (m Model) viewSessions() string {
 	var b strings.Builder
 	b.WriteString("Sessions")
@@ -507,7 +652,7 @@ func (m Model) viewSessions() string {
 		b.WriteString("Search: " + m.searchInput.View() + "\n\n")
 	}
 	if len(m.sessions) == 0 {
-		b.WriteString(dimStyle.Render("No sessions. Press n to create one.") + "\n")
+		b.WriteString(dimStyle.Render("No sessions. Press n for a new empty session.") + "\n")
 		return b.String()
 	}
 	for i, s := range m.sessions {
@@ -523,10 +668,6 @@ func (m Model) viewSessions() string {
 	return b.String()
 }
 
-func (m Model) viewNewSession() string {
-	return "New adventure session\n\nTitle: " + m.titleInput.View() + "\n"
-}
-
 func (m Model) viewPlay() string {
 	if m.session == nil {
 		return "No session open"
@@ -536,26 +677,41 @@ func (m Model) viewPlay() string {
 	if s.Effort != "" {
 		head += " / " + s.Effort
 	}
+	if !m.sessionPersisted {
+		head += "  ·  unsaved"
+	}
+	focusHint := "input"
+	if m.focus == FocusHistory {
+		focusHint = "history"
+	}
 	var b strings.Builder
 	b.WriteString(titleStyle.Render(head) + "\n")
+	b.WriteString(dimStyle.Render("focus: "+focusHint) + "\n")
 	b.WriteString(m.transcript.View() + "\n")
+	if m.slashPaletteActive() && len(m.slashMatches) > 0 {
+		b.WriteString(m.viewSlashPalette() + "\n")
+	}
 	b.WriteString(boxStyle.Render(m.playInput.View()) + "\n")
 	return b.String()
 }
 
-func (m Model) viewPlayMenu() string {
+func (m Model) viewSlashPalette() string {
 	var b strings.Builder
-	b.WriteString("Session actions\n\n")
-	for i, label := range playActLabels {
-		cursor := "  "
-		line := itemStyle.Render(label)
-		if i == m.playMenuCur {
-			cursor = "> "
-			line = selStyle.Render(" " + label + " ")
+	b.WriteString(dimStyle.Render("Commands") + "\n")
+	limit := min(8, len(m.slashMatches))
+	for i := 0; i < limit; i++ {
+		sm := m.slashMatches[i]
+		label := "/" + sm.Cmd.Name + "  " + sm.Cmd.Description
+		if i == m.slashCursor {
+			b.WriteString(selStyle.Render(" "+label+" ") + "\n")
+		} else {
+			b.WriteString(itemStyle.Render(label) + "\n")
 		}
-		b.WriteString(cursor + line + "\n")
 	}
-	return b.String()
+	if len(m.slashMatches) > limit {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  … %d more", len(m.slashMatches)-limit)) + "\n")
+	}
+	return boxStyle.Render(strings.TrimRight(b.String(), "\n"))
 }
 
 func (m Model) viewPickTurn() string {
@@ -599,13 +755,6 @@ func (m Model) viewTextForm() string {
 	return title + "\n\n" + boxStyle.Render(m.formArea.View()) + "\n"
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (m Model) viewBranches() string {
 	var b strings.Builder
 	b.WriteString("Branches (newest first)\n\n")
@@ -637,6 +786,13 @@ func (m Model) viewRevisePreview() string {
 	b.WriteString(boxStyle.Width(max(20, m.width-4)).Render(m.reviseDraft) + "\n\n")
 	b.WriteString("Apply this revision? (y/n)\n")
 	return b.String()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func max(a, b int) int {

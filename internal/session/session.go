@@ -59,11 +59,14 @@ type Session struct {
 
 const schemaVersion = 1
 
+// DefaultTitle is used when no title has been derived yet.
+const DefaultTitle = "Untitled adventure"
+
 // New creates a session in the brainstorm phase.
 func New(title, model, effort string) *Session {
 	now := time.Now().UTC()
 	if title == "" {
-		title = "Untitled adventure"
+		title = DefaultTitle
 	}
 	return &Session{
 		ID:        newID(),
@@ -77,6 +80,29 @@ func New(title, model, effort string) *Session {
 		Feedback:  nil,
 		SchemaVer: schemaVersion,
 	}
+}
+
+// AutoTitleFromText derives a short session title from the first user message.
+// Uses the first line, collapses whitespace, and truncates to a display-friendly length.
+func AutoTitleFromText(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return DefaultTitle
+	}
+	if i := strings.IndexAny(text, "\n\r"); i >= 0 {
+		text = strings.TrimSpace(text[:i])
+	}
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return DefaultTitle
+	}
+	text = strings.Join(fields, " ")
+	const maxRunes = 60
+	r := []rune(text)
+	if len(r) > maxRunes {
+		return string(r[:maxRunes-1]) + "…"
+	}
+	return text
 }
 
 func newID() string {

@@ -87,11 +87,12 @@ Flags:
 	fs.SetOutput(os.Stdout)
 	fs.PrintDefaults()
 	fmt.Fprintf(os.Stdout, `
-Launches a keyboard-driven terminal UI (Bubble Tea) for xAI OAuth sign-in,
-model/effort selection, session create/list/search, brainstorming then
-adventure play, editing prior turns (manual or AI-assisted), branch
-navigation, and out-of-band feedback for future AI responses.
+Launches a keyboard-driven terminal UI (Bubble Tea). Starts on an empty new
+session; the first message auto-names and saves it. Use slash commands
+(/settings, /sessions, /rename, /phase, …) for features; Tab switches
+between the message input and selectable history.
 
-Sessions are saved automatically under the configured sessions directory.
+Sessions are stored under the configured sessions directory after the first
+user message is submitted.
 `)
 }
