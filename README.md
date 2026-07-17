@@ -11,6 +11,8 @@ go run ./cmd/aiadventure --help
 go run ./cmd/aiadventure --sessions-dir /path/to/sessions
 ```
 
+The interactive app is a full-screen, keyboard-driven TUI (Bubble Tea).
+
 ## Features (initial version)
 
 - Sign in to xAI via device-code OAuth; choose model and reasoning effort when supported
@@ -21,13 +23,36 @@ go run ./cmd/aiadventure --sessions-dir /path/to/sessions
 - Searchable session list
 - Out-of-band feedback notes that guide future AI replies without rewriting story turns
 
-## Session commands (while playing)
+## TUI keyboard map
 
-| Command | Action |
-|---------|--------|
-| `/phase adventure` | Leave brainstorming and begin play |
-| `/edit` | Manually edit a prior turn (fork) |
-| `/revise` | Ask the AI to rewrite an AI turn (fork) |
-| `/feedback` | Add tips for future replies only |
-| `/branch` | List/switch branch tips |
-| `/menu` | Save and return to the main menu |
+### Hub
+| Key | Action |
+|-----|--------|
+| ↑/↓ or j/k | Move |
+| Enter | Select |
+| q / Esc | Quit |
+
+### Session browser
+| Key | Action |
+|-----|--------|
+| ↑/↓ | Move |
+| Enter | Open session |
+| `/` | Search/filter |
+| n | New session |
+| Esc | Back to hub |
+
+### Play
+| Key | Action |
+|-----|--------|
+| Enter | Send message to AI |
+| Ctrl+A | Session actions (phase, edit, revise, feedback, branch, model) |
+| Ctrl+U | Clear input |
+| Esc | Save and return to hub |
+| PgUp/PgDn | Scroll transcript |
+
+### Multi-line forms (edit / feedback / revise instruction)
+| Key | Action |
+|-----|--------|
+| Enter | Insert newline |
+| Ctrl+S | Submit |
+| Esc | Cancel |

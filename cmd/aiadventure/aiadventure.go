@@ -87,10 +87,10 @@ Flags:
 	fs.SetOutput(os.Stdout)
 	fs.PrintDefaults()
 	fmt.Fprintf(os.Stdout, `
-Interactive menus cover xAI OAuth sign-in, model/effort selection,
-session create/list/search, brainstorming then adventure play, editing
-prior turns (manual or AI-assisted), branch navigation, and out-of-band
-feedback for future AI responses.
+Launches a keyboard-driven terminal UI (Bubble Tea) for xAI OAuth sign-in,
+model/effort selection, session create/list/search, brainstorming then
+adventure play, editing prior turns (manual or AI-assisted), branch
+navigation, and out-of-band feedback for future AI responses.
 
 Sessions are saved automatically under the configured sessions directory.
 `)
