@@ -1,15 +1,13 @@
 package app
 
 // Screen identifies the active TUI view.
+// List/menu UIs (sessions, branch, pick-turn) are modals over ScreenPlay.
 type Screen int
 
 const (
 	ScreenPlay Screen = iota
 	ScreenAuth
-	ScreenSessions
-	ScreenPickTurn
 	ScreenTextForm
-	ScreenBranches
 	ScreenRevisePreview
 )
 
@@ -20,14 +18,8 @@ func (s Screen) String() string {
 		return "play"
 	case ScreenAuth:
 		return "auth"
-	case ScreenSessions:
-		return "sessions"
-	case ScreenPickTurn:
-		return "pick_turn"
 	case ScreenTextForm:
 		return "text_form"
-	case ScreenBranches:
-		return "branches"
 	case ScreenRevisePreview:
 		return "revise_preview"
 	default:
@@ -63,6 +55,9 @@ const (
 	ModalSettings       // model list
 	ModalEffort         // effort for pending model
 	ModalRename         // rename current session
+	ModalSessions       // session browser
+	ModalPickTurn       // pick turn for edit/revise
+	ModalBranches       // branch tips list
 )
 
 // String returns a stable modal name for tests.
@@ -76,6 +71,12 @@ func (m Modal) String() string {
 		return "effort"
 	case ModalRename:
 		return "rename"
+	case ModalSessions:
+		return "sessions"
+	case ModalPickTurn:
+		return "pick_turn"
+	case ModalBranches:
+		return "branches"
 	default:
 		return "unknown"
 	}

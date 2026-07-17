@@ -15,7 +15,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Modals on play take priority.
+	// Modals on play take priority over play input and other screens.
 	if m.screen == ScreenPlay && m.modal != ModalNone {
 		return m.keyModal(msg)
 	}
@@ -23,16 +23,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case ScreenAuth:
 		return m.keyAuth(msg)
-	case ScreenSessions:
-		return m.keySessions(msg)
 	case ScreenPlay:
 		return m.keyPlay(msg)
-	case ScreenPickTurn:
-		return m.keyPickTurn(msg)
 	case ScreenTextForm:
 		return m.keyTextForm(msg)
-	case ScreenBranches:
-		return m.keyBranches(msg)
 	case ScreenRevisePreview:
 		return m.keyRevisePreview(msg)
 	}
@@ -47,8 +41,24 @@ func (m Model) keyModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.keyEffort(msg)
 	case ModalRename:
 		return m.keyRename(msg)
+	case ModalSessions:
+		return m.keySessions(msg)
+	case ModalPickTurn:
+		return m.keyPickTurn(msg)
+	case ModalBranches:
+		return m.keyBranches(msg)
 	}
 	return m, nil
+}
+
+// closeModal returns to play input after dismissing a list/settings overlay.
+func (m Model) closeModal() Model {
+	m.modal = ModalNone
+	m.searchMode = false
+	m.searchInput.Blur()
+	m.titleInput.Blur()
+	m.playInput.Focus()
+	return m
 }
 
 func (m Model) openSettingsModal() Model {
@@ -216,8 +226,7 @@ func (m Model) keySessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc":
-		m.screen = ScreenPlay
-		m.playInput.Focus()
+		m = m.closeModal()
 	case "up", "k":
 		if m.sessCursor > 0 {
 			m.sessCursor--
@@ -233,8 +242,7 @@ func (m Model) keySessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "n":
 		m.startNewSession()
-		m.screen = ScreenPlay
-		m.playInput.Focus()
+		m = m.closeModal()
 		m.refreshTranscript()
 		m.status = "New session (unsaved until first message)"
 		return m, nil
@@ -532,7 +540,7 @@ func (m Model) runSlashCommand(cmd SlashCommand, args string) (tea.Model, tea.Cm
 		return m, nil
 
 	case cmdSessions:
-		m.screen = ScreenSessions
+		m.modal = ModalSessions
 		m.searchMode = false
 		m.filterQuery = ""
 		m.sessCursor = 0
@@ -591,7 +599,7 @@ func (m Model) runSlashCommand(cmd SlashCommand, args string) (tea.Model, tea.Cm
 		m.pickTurns = path
 		m.pickCursor = max(0, len(m.pickTurns)-1)
 		m.pickForRevise = false
-		m.screen = ScreenPickTurn
+		m.modal = ModalPickTurn
 		m.playInput.Blur()
 		return m, nil
 
@@ -618,7 +626,7 @@ func (m Model) runSlashCommand(cmd SlashCommand, args string) (tea.Model, tea.Cm
 		m.pickTurns = asst
 		m.pickCursor = max(0, len(m.pickTurns)-1)
 		m.pickForRevise = true
-		m.screen = ScreenPickTurn
+		m.modal = ModalPickTurn
 		m.playInput.Blur()
 		return m, nil
 
@@ -635,7 +643,7 @@ func (m Model) runSlashCommand(cmd SlashCommand, args string) (tea.Model, tea.Cm
 		}
 		m.branches = buildBranchRows(m.session)
 		m.branchCursor = 0
-		m.screen = ScreenBranches
+		m.modal = ModalBranches
 		m.playInput.Blur()
 		return m, nil
 	}
@@ -645,8 +653,7 @@ func (m Model) runSlashCommand(cmd SlashCommand, args string) (tea.Model, tea.Cm
 func (m Model) keyPickTurn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.screen = ScreenPlay
-		m.playInput.Focus()
+		m = m.closeModal()
 	case "up", "k":
 		if m.pickCursor > 0 {
 			m.pickCursor--
@@ -657,7 +664,7 @@ func (m Model) keyPickTurn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if len(m.pickTurns) == 0 {
-			m.screen = ScreenPlay
+			m = m.closeModal()
 			return m, nil
 		}
 		t := m.pickTurns[m.pickCursor]
@@ -726,8 +733,7 @@ func (m Model) keyTextForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) keyBranches(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.screen = ScreenPlay
-		m.playInput.Focus()
+		m = m.closeModal()
 	case "up", "k":
 		if m.branchCursor > 0 {
 			m.branchCursor--
@@ -748,8 +754,7 @@ func (m Model) keyBranches(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.saveSessionIfPersisted()
 		m.status = "Switched branch " + shortID(id)
 		m.refreshTranscript()
-		m.screen = ScreenPlay
-		m.playInput.Focus()
+		m = m.closeModal()
 	}
 	return m, nil
 }

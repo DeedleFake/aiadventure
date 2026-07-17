@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"deedles.dev/aiadventure/internal/session"
 	"deedles.dev/aiadventure/internal/xai"
@@ -312,16 +313,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Forward to focused inputs when appropriate.
 	var cmd tea.Cmd
 	switch m.screen {
-	case ScreenSessions:
-		if m.searchMode {
-			m.searchInput, cmd = m.searchInput.Update(msg)
-		}
 	case ScreenPlay:
-		if m.modal == ModalRename {
+		switch m.modal {
+		case ModalSessions:
+			if m.searchMode {
+				m.searchInput, cmd = m.searchInput.Update(msg)
+			}
+		case ModalRename:
 			m.titleInput, cmd = m.titleInput.Update(msg)
-		} else if m.modal == ModalNone && m.focus == FocusInput && !m.busy {
-			m.playInput, cmd = m.playInput.Update(msg)
-			m.syncSlashPalette()
+		case ModalNone:
+			if m.focus == FocusInput && !m.busy {
+				m.playInput, cmd = m.playInput.Update(msg)
+				m.syncSlashPalette()
+			}
 		}
 	case ScreenTextForm:
 		m.formArea, cmd = m.formArea.Update(msg)
@@ -474,16 +478,11 @@ func (m Model) View() string {
 	switch m.screen {
 	case ScreenAuth:
 		body = m.viewAuth()
-	case ScreenSessions:
-		body = m.viewSessions()
 	case ScreenPlay:
+		// List menus (sessions/branch/pick) are modals; body stays the play surface.
 		body = m.viewPlay()
-	case ScreenPickTurn:
-		body = m.viewPickTurn()
 	case ScreenTextForm:
 		body = m.viewTextForm()
-	case ScreenBranches:
-		body = m.viewBranches()
 	case ScreenRevisePreview:
 		body = m.viewRevisePreview()
 	default:
@@ -519,15 +518,29 @@ func (m Model) renderWithCenteredModal(base string) string {
 		content = m.viewEffortModal()
 	case ModalRename:
 		content = m.viewRenameModal()
+	case ModalSessions:
+		content = m.viewSessions()
+	case ModalPickTurn:
+		content = m.viewPickTurn()
+	case ModalBranches:
+		content = m.viewBranches()
 	default:
 		return base
 	}
-	boxW := min(60, max(30, m.width-8))
+	boxW := min(64, max(30, m.width-6))
+	// Cap modal height so the composite frame stays within the terminal.
+	maxBoxH := max(6, m.height-2)
+	rawH := lipgloss.Height(content)
+	if rawH > maxBoxH-4 { // account for modal padding/border
+		lines := strings.Split(content, "\n")
+		limit := max(1, maxBoxH-4)
+		if len(lines) > limit {
+			lines = lines[:limit]
+			lines[limit-1] = dimStyle.Render("…")
+			content = strings.Join(lines, "\n")
+		}
+	}
 	box := modalStyle.Width(boxW).Render(content)
-	// Single terminal-sized frame. The previous composition stacked
-	// Place(width, ~height, modal) + "\n" + base, producing ~2× terminal height;
-	// Bubble Tea's standard renderer keeps only the last height lines, which was
-	// the play surface — so the modal was state-active but invisible.
 	w, h := m.width, m.height
 	if w <= 0 {
 		w = boxW + 4
@@ -535,13 +548,103 @@ func (m Model) renderWithCenteredModal(base string) string {
 	if h <= 0 {
 		h = lipgloss.Height(box)
 	}
-	return lipgloss.Place(
-		w, h,
-		lipgloss.Center, lipgloss.Center,
-		box,
-		lipgloss.WithWhitespaceChars(" "),
-		lipgloss.WithWhitespaceForeground(lipgloss.Color("238")),
-	)
+	// Composite: play (base) remains visible under a centered modal.
+	// Height is clamped to the terminal so Bubble Tea does not clip the modal away.
+	fitted := fitViewToTerminal(base, w, h)
+	return placeOverlay(fitted, box, w, h)
+}
+
+// fitViewToTerminal pads or clips a multi-line view to exactly width×height cells.
+func fitViewToTerminal(s string, width, height int) string {
+	if height <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if width > 0 {
+		for i, line := range lines {
+			lw := lipgloss.Width(line)
+			if lw > width {
+				lines[i] = ansi.Truncate(line, width, "")
+			} else if lw < width {
+				lines[i] = line + strings.Repeat(" ", width-lw)
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// placeOverlay centers fg over bg within a width×height frame, keeping bg cells
+// outside the modal. ANSI sequences in bg lines are preserved via ansi.Cut.
+func placeOverlay(bg, fg string, width, height int) string {
+	if width <= 0 {
+		width = max(lipgloss.Width(bg), lipgloss.Width(fg))
+	}
+	if height <= 0 {
+		height = max(lipgloss.Height(bg), lipgloss.Height(fg))
+	}
+
+	bgLines := strings.Split(bg, "\n")
+	if len(bgLines) > 0 && bgLines[len(bgLines)-1] == "" {
+		bgLines = bgLines[:len(bgLines)-1]
+	}
+	for len(bgLines) < height {
+		bgLines = append(bgLines, strings.Repeat(" ", width))
+	}
+	if len(bgLines) > height {
+		bgLines = bgLines[:height]
+	}
+
+	fgW := lipgloss.Width(fg)
+	fgH := lipgloss.Height(fg)
+	if fgW > width {
+		fgW = width
+	}
+	fgLines := strings.Split(fg, "\n")
+	if len(fgLines) > 0 && fgLines[len(fgLines)-1] == "" {
+		fgLines = fgLines[:len(fgLines)-1]
+	}
+	if len(fgLines) > height {
+		fgLines = fgLines[:height]
+		fgH = height
+	}
+
+	x := max(0, (width-fgW)/2)
+	y := max(0, (height-fgH)/2)
+
+	out := make([]string, height)
+	copy(out, bgLines)
+	for i, fl := range fgLines {
+		row := y + i
+		if row < 0 || row >= height {
+			continue
+		}
+		line := bgLines[row]
+		// Ensure fg line spans fgW for a solid modal block.
+		pad := fgW - lipgloss.Width(fl)
+		if pad > 0 {
+			fl = fl + strings.Repeat(" ", pad)
+		} else if pad < 0 {
+			fl = ansi.Truncate(fl, fgW, "")
+		}
+		left := ansi.Cut(line, 0, x)
+		rightStart := x + fgW
+		var right string
+		if rightStart < lipgloss.Width(line) {
+			right = ansi.TruncateLeft(line, rightStart, "")
+		}
+		// Reset after the modal so residual bg SGR does not bleed into the right strip.
+		out[row] = left + fl + "\x1b[0m" + right
+	}
+	return strings.Join(out, "\n")
 }
 
 func (m Model) viewHeader() string {
@@ -568,6 +671,13 @@ func (m Model) footerHelp() string {
 			return "↑/↓ move  ·  enter select  ·  esc close"
 		case ModalRename:
 			return "type title  ·  enter save  ·  esc cancel"
+		case ModalSessions:
+			if m.searchMode {
+				return "type to filter  ·  enter apply  ·  esc cancel search"
+			}
+			return "↑/↓ move  ·  enter open  ·  / search  ·  n new  ·  esc close"
+		case ModalPickTurn, ModalBranches:
+			return "↑/↓ move  ·  enter select  ·  esc cancel"
 		}
 		if m.focus == FocusHistory {
 			return "↑/↓ select turn  ·  enter edit  ·  tab input  ·  /cmd  ·  esc input"
@@ -580,13 +690,6 @@ func (m Model) footerHelp() string {
 	switch m.screen {
 	case ScreenAuth:
 		return "enter start sign-in  ·  esc back"
-	case ScreenSessions:
-		if m.searchMode {
-			return "type to filter  ·  enter apply  ·  esc cancel search"
-		}
-		return "↑/↓ move  ·  enter open  ·  / search  ·  n new  ·  esc back"
-	case ScreenPickTurn, ScreenBranches:
-		return "↑/↓ move  ·  enter select  ·  esc cancel"
 	case ScreenTextForm:
 		return "type  ·  enter newline  ·  ctrl+s submit  ·  esc cancel"
 	case ScreenRevisePreview:
@@ -659,7 +762,7 @@ func (m Model) viewRenameModal() string {
 
 func (m Model) viewSessions() string {
 	var b strings.Builder
-	b.WriteString("Sessions")
+	b.WriteString(titleStyle.Render("Sessions"))
 	if m.filterQuery != "" {
 		b.WriteString(fmt.Sprintf("  filter=%q", m.filterQuery))
 	}

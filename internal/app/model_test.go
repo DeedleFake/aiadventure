@@ -291,10 +291,17 @@ func TestSlashRenamePersistsWhenSaved(t *testing.T) {
 	}
 }
 
-// TestSettingsModalCenteredOverPlay asserts modal overlay presentation and persistence.
+// TestSettingsModalCenteredOverPlay asserts modal overlays the play surface (not a blank frame).
 func TestSettingsModalCenteredOverPlay(t *testing.T) {
 	deps := testDeps(t)
 	mm := sized(t, deps)
+
+	// Distinct play markers so we can assert they remain under the modal.
+	mm = typeText(t, mm, "/rename Overlay Quest")
+	mm = applyKeys(t, mm, "enter")
+	if mm.Session().Title != "Overlay Quest" {
+		t.Fatalf("title=%q", mm.Session().Title)
+	}
 
 	mm = typeText(t, mm, "/model")
 	mm = applyKeys(t, mm, "enter")
@@ -308,8 +315,16 @@ func TestSettingsModalCenteredOverPlay(t *testing.T) {
 	if !strings.Contains(view, "Settings") && !strings.Contains(view, "Select model") {
 		t.Fatalf("missing settings: %s", view)
 	}
+	// Underlying play surface must still be painted (not blank/dim-only frame).
+	if !strings.Contains(view, "Overlay Quest") {
+		t.Fatalf("play session title missing under modal: %s", view)
+	}
+	if !strings.Contains(view, "phase=") && !strings.Contains(view, "brainstorm") && !strings.Contains(view, "adventure") {
+		t.Fatalf("play phase marker missing under modal: %s", view)
+	}
 	// Frame must fit the terminal so Bubble Tea does not clip the modal away.
 	assertModalVisibleInTerminal(t, mm)
+	assertPlayAndModalInView(t, mm, "Settings", "Select model", "Overlay Quest")
 
 	// Change effort preference through modal and ensure config persists.
 	mm = applyKeys(t, mm, "enter") // model → effort for grok-4.5
@@ -323,6 +338,43 @@ func TestSettingsModalCenteredOverPlay(t *testing.T) {
 	// Config file should exist
 	if _, err := config.Load(deps.Paths, config.Options{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestRenameModalOverlayPlay asserts rename modal paints over play and Esc restores input.
+func TestRenameModalOverlayPlay(t *testing.T) {
+	deps := testDeps(t)
+	mm := sized(t, deps)
+
+	mm = typeText(t, mm, "/rename")
+	mm = applyKeys(t, mm, "enter")
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("screen=%s want play", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalRename {
+		t.Fatalf("modal=%s want rename", mm.ModalKind())
+	}
+	view := mm.View()
+	if !strings.Contains(view, "Rename") {
+		t.Fatalf("rename modal missing: %s", view)
+	}
+	if !strings.Contains(view, "phase=") && !strings.Contains(view, "unsaved") && !strings.Contains(view, "AI Adventure") {
+		t.Fatalf("play surface missing under rename modal: %s", view)
+	}
+	assertModalVisibleInTerminal(t, mm)
+
+	before := mm.PlayInputValue()
+	mm = applyKeys(t, mm, "x", "y") // should go to title input, not play
+	if mm.PlayInputValue() != before {
+		t.Fatalf("play input leaked under rename modal: %q", mm.PlayInputValue())
+	}
+	mm = applyKeys(t, mm, "esc")
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after esc modal=%s", mm.ModalKind())
+	}
+	mm = applyKeys(t, mm, "a", "b")
+	if !strings.Contains(mm.PlayInputValue(), "ab") {
+		t.Fatalf("play input not usable after esc: %q", mm.PlayInputValue())
 	}
 }
 
@@ -362,11 +414,17 @@ func assertModalVisibleInTerminal(t *testing.T, mm app.Model) {
 		}
 		first = strings.Join(fl, "\n")
 	}
-	hasSettings := strings.Contains(visible, "Settings") || strings.Contains(visible, "Select model") ||
-		strings.Contains(visible, "Effort") || strings.Contains(visible, "Rename")
-	hasFirst := strings.Contains(first, "Settings") || strings.Contains(first, "Select model") ||
-		strings.Contains(first, "Effort") || strings.Contains(first, "Rename")
-	if !hasSettings && !hasFirst {
+	markers := []string{"Settings", "Select model", "Effort", "Rename", "Sessions", "Branches", "Select turn", "Select AI"}
+	hasVisible, hasFirst := false, false
+	for _, mk := range markers {
+		if strings.Contains(visible, mk) {
+			hasVisible = true
+		}
+		if strings.Contains(first, mk) {
+			hasFirst = true
+		}
+	}
+	if !hasVisible && !hasFirst {
 		t.Fatalf("modal text missing from visible terminal window (height=%d):\n%s", height, visible)
 	}
 	// Catalog model labels should show in settings
@@ -379,6 +437,33 @@ func assertModalVisibleInTerminal(t *testing.T, mm app.Model) {
 				t.Fatalf("settings catalog missing from visible window:\n%s", visible)
 			}
 		}
+	}
+}
+
+// assertPlayAndModalInView requires both underlying play markers and modal labels in View.
+func assertPlayAndModalInView(t *testing.T, mm app.Model, modalNeedles ...string) {
+	t.Helper()
+	view := mm.View()
+	_, height := mm.Size()
+	if height > 0 {
+		n := len(strings.Split(strings.TrimRight(view, "\n"), "\n"))
+		if n > height {
+			t.Fatalf("view lines=%d > terminal height=%d", n, height)
+		}
+	}
+	foundModal := false
+	for _, n := range modalNeedles {
+		if strings.Contains(view, n) {
+			foundModal = true
+			break
+		}
+	}
+	if !foundModal {
+		t.Fatalf("modal markers %v missing from view:\n%s", modalNeedles, view)
+	}
+	// Play surface markers: app chrome and/or session head.
+	if !strings.Contains(view, "AI Adventure") {
+		t.Fatalf("header chrome missing under modal:\n%s", view)
 	}
 }
 
@@ -466,13 +551,19 @@ func TestTabHistoryFocusAndSelect(t *testing.T) {
 	mm = typeText(t, mm, "/sessions")
 	mm, cmd = upd(t, mm, key("enter"))
 	mm = drainCmd(t, mm, cmd)
-	if mm.Screen() != app.ScreenSessions {
-		t.Fatalf("sessions=%s", mm.Screen())
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("sessions must stay on play, screen=%s", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalSessions {
+		t.Fatalf("sessions modal=%s want sessions", mm.ModalKind())
 	}
 	mm, cmd = upd(t, mm, key("enter"))
 	mm = drainCmd(t, mm, cmd)
 	if mm.Screen() != app.ScreenPlay {
 		t.Fatalf("play=%s", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after open modal=%s want none", mm.ModalKind())
 	}
 	if !mm.SessionPersisted() {
 		t.Fatal("opened session should be persisted")
@@ -568,10 +659,13 @@ func TestSlashSessionsPhaseFeedbackEditBranch(t *testing.T) {
 	// Edit via slash (uses histCursor / path)
 	mm = typeText(t, mm, "/edit")
 	mm = applyKeys(t, mm, "enter")
-	if mm.Screen() != app.ScreenTextForm && mm.Screen() != app.ScreenPickTurn {
-		t.Fatalf("edit screen=%s", mm.Screen())
+	if mm.Screen() != app.ScreenTextForm && mm.ModalKind() != app.ModalPickTurn {
+		t.Fatalf("edit screen=%s modal=%s", mm.Screen(), mm.ModalKind())
 	}
-	if mm.Screen() == app.ScreenPickTurn {
+	if mm.ModalKind() == app.ModalPickTurn {
+		if mm.Screen() != app.ScreenPlay {
+			t.Fatalf("pick-turn must overlay play, screen=%s", mm.Screen())
+		}
 		mm = applyKeys(t, mm, "enter")
 	}
 	if mm.Screen() != app.ScreenTextForm {
@@ -582,15 +676,24 @@ func TestSlashSessionsPhaseFeedbackEditBranch(t *testing.T) {
 		t.Fatalf("play=%s", mm.Screen())
 	}
 
-	// Branch browser
+	// Branch browser as modal over play
 	mm = typeText(t, mm, "/branch")
 	mm = applyKeys(t, mm, "enter")
-	if mm.Screen() != app.ScreenBranches {
-		t.Fatalf("branches=%s view=%s", mm.Screen(), mm.View())
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("branch must overlay play, screen=%s", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalBranches {
+		t.Fatalf("branches modal=%s view=%s", mm.ModalKind(), mm.View())
+	}
+	if !strings.Contains(mm.View(), "Branches") {
+		t.Fatalf("branch modal content missing: %s", mm.View())
 	}
 	mm = applyKeys(t, mm, "esc")
 	if mm.Screen() != app.ScreenPlay {
 		t.Fatal(mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after esc modal=%s", mm.ModalKind())
 	}
 
 	// Auth screen via slash
@@ -708,14 +811,254 @@ func TestStructuralTUIScreens(t *testing.T) {
 		t.Fatalf("screen name=%s", m.Screen())
 	}
 	for _, s := range []app.Screen{
-		app.ScreenPlay, app.ScreenSessions, app.ScreenAuth,
-		app.ScreenPickTurn, app.ScreenTextForm, app.ScreenBranches,
+		app.ScreenPlay, app.ScreenAuth, app.ScreenTextForm, app.ScreenRevisePreview,
 	} {
 		if s.String() == "unknown" {
 			t.Fatalf("bad screen %d", s)
 		}
 	}
+	for _, md := range []app.Modal{
+		app.ModalNone, app.ModalSettings, app.ModalEffort, app.ModalRename,
+		app.ModalSessions, app.ModalPickTurn, app.ModalBranches,
+	} {
+		if md.String() == "unknown" {
+			t.Fatalf("bad modal %d", md)
+		}
+	}
 	var _ tea.Model = m
+}
+
+// TestSessionsModalOverlay drives /sessions as a modal over play (not a full-screen switch).
+func TestSessionsModalOverlay(t *testing.T) {
+	deps := testDeps(t)
+	mm := sized(t, deps)
+
+	// Persist a named session so the list has content.
+	mm = typeText(t, mm, "Ice castle adventure seed")
+	var cmd tea.Cmd
+	mm, cmd = upd(t, mm, key("enter"))
+	mm = drainCmd(t, mm, cmd)
+	title := mm.Session().Title
+	if title == "" {
+		t.Fatal("expected auto title")
+	}
+
+	// Open sessions browser — must stay on play with sessions modal.
+	mm = typeText(t, mm, "/sessions")
+	mm, cmd = upd(t, mm, key("enter"))
+	mm = drainCmd(t, mm, cmd)
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("screen=%s want play", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalSessions {
+		t.Fatalf("modal=%s want sessions", mm.ModalKind())
+	}
+	view := mm.View()
+	if !strings.Contains(view, "Sessions") {
+		t.Fatalf("sessions label missing: %s", view)
+	}
+	// Underlying play + list content both present.
+	if !strings.Contains(view, "AI Adventure") {
+		t.Fatalf("play chrome missing under sessions modal: %s", view)
+	}
+	if !strings.Contains(view, title) && !strings.Contains(view, "phase=") {
+		// Title may appear in both list and play head; at least one play marker.
+		t.Fatalf("expected session markers under overlay: %s", view)
+	}
+	assertModalVisibleInTerminal(t, mm)
+
+	// Keys must not leak into play input while modal is open.
+	before := mm.PlayInputValue()
+	mm = applyKeys(t, mm, "x", "y", "z")
+	if mm.ModalKind() != app.ModalSessions {
+		t.Fatalf("modal closed by noise keys: %s", mm.ModalKind())
+	}
+	if mm.PlayInputValue() != before {
+		t.Fatalf("play input leaked: got %q want %q", mm.PlayInputValue(), before)
+	}
+
+	// Escape restores play + ModalNone; prior session intact.
+	mm = applyKeys(t, mm, "esc")
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after esc modal=%s", mm.ModalKind())
+	}
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("after esc screen=%s", mm.Screen())
+	}
+	if mm.Session() == nil || mm.Session().Title != title {
+		t.Fatalf("session context lost after esc: %+v", mm.Session())
+	}
+	mm = applyKeys(t, mm, "h", "i")
+	if !strings.Contains(mm.PlayInputValue(), "hi") {
+		t.Fatalf("play input not usable after esc: %q", mm.PlayInputValue())
+	}
+
+	// Re-open and select session (primary action still works).
+	mm = applyKeys(t, mm, "ctrl+u")
+	mm = typeText(t, mm, "/sessions")
+	mm, cmd = upd(t, mm, key("enter"))
+	mm = drainCmd(t, mm, cmd)
+	if mm.ModalKind() != app.ModalSessions {
+		t.Fatalf("modal=%s input=%q", mm.ModalKind(), mm.PlayInputValue())
+	}
+	mm, cmd = upd(t, mm, key("enter"))
+	mm = drainCmd(t, mm, cmd)
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after open modal=%s", mm.ModalKind())
+	}
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("after open screen=%s", mm.Screen())
+	}
+	if !mm.SessionPersisted() {
+		t.Fatal("opened session should be persisted")
+	}
+	if mm.Session().Title != title {
+		t.Fatalf("opened title=%q want %q", mm.Session().Title, title)
+	}
+}
+
+// TestBranchAndPickTurnModals converts former full-screen menus to overlays.
+func TestBranchAndPickTurnModals(t *testing.T) {
+	deps := testDeps(t)
+	mm := sized(t, deps)
+
+	mm = typeText(t, mm, "Branch world seed")
+	var cmd tea.Cmd
+	mm, cmd = upd(t, mm, key("enter"))
+	mm = drainCmd(t, mm, cmd)
+	s := mm.Session()
+	_, _ = s.Append(session.RoleAssistant, "Crystal reply for revise pick.")
+	_ = deps.Store.Save(s)
+	mm = app.RefreshTranscriptForTest(mm)
+
+	// /branch → modal over play
+	mm = typeText(t, mm, "/branch")
+	mm = applyKeys(t, mm, "enter")
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("branch screen=%s want play", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalBranches {
+		t.Fatalf("modal=%s want branches", mm.ModalKind())
+	}
+	view := mm.View()
+	if !strings.Contains(view, "Branches") {
+		t.Fatalf("branch content missing: %s", view)
+	}
+	if !strings.Contains(view, "AI Adventure") || !strings.Contains(view, "phase=") {
+		t.Fatalf("play surface missing under branch modal: %s", view)
+	}
+	assertModalVisibleInTerminal(t, mm)
+	// Escape cancels
+	mm = applyKeys(t, mm, "esc")
+	if mm.ModalKind() != app.ModalNone || mm.Screen() != app.ScreenPlay {
+		t.Fatalf("after esc screen=%s modal=%s", mm.Screen(), mm.ModalKind())
+	}
+
+	// /revise with history on a user turn → pick-turn modal (not form directly).
+	// Focus stays on input; histCursor is on last path index (assistant) after seed —
+	// force selection onto the user turn so SelectedHistoryTurn is not assistant.
+	mm = applyKeys(t, mm, "tab") // history
+	// path: user, assistant → indices 0,1; move to user turn
+	for mm.HistCursor() > 0 {
+		mm = applyKeys(t, mm, "up")
+	}
+	mm = applyKeys(t, mm, "tab") // back to input; histCursor stays on user
+	mm = typeText(t, mm, "/revise")
+	mm = applyKeys(t, mm, "enter")
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("pick-turn must overlay play, screen=%s", mm.Screen())
+	}
+	if mm.ModalKind() != app.ModalPickTurn {
+		// If hist still points at assistant, form may open; that is still valid.
+		// Force-open path: re-run with explicit non-assistant selection.
+		if mm.Screen() == app.ScreenTextForm {
+			mm = applyKeys(t, mm, "esc")
+			// Put hist on user and use slash again after clearing focus
+			mm = applyKeys(t, mm, "tab")
+			for mm.HistCursor() > 0 {
+				mm = applyKeys(t, mm, "up")
+			}
+			// Stay on history focus so SelectedHistoryTurn is user (not assistant)
+			// cmdRevise prefers selected history only when RoleAssistant.
+			// With FocusHistory on user turn, SelectedHistoryTurn is user → pick list.
+			mm = typeText(t, mm, "/revise")
+			// typing from history switches to input — histCursor remains
+			mm = applyKeys(t, mm, "enter")
+		}
+	}
+	if mm.ModalKind() != app.ModalPickTurn {
+		t.Fatalf("modal=%s want pick_turn (screen=%s view=%s)", mm.ModalKind(), mm.Screen(), mm.View())
+	}
+	view = mm.View()
+	if !strings.Contains(view, "Select") && !strings.Contains(view, "revise") && !strings.Contains(view, "AI") {
+		t.Fatalf("pick-turn content missing: %s", view)
+	}
+	assertModalVisibleInTerminal(t, mm)
+	// Escape restores play
+	mm = applyKeys(t, mm, "esc")
+	if mm.ModalKind() != app.ModalNone || mm.Screen() != app.ScreenPlay {
+		t.Fatalf("after esc screen=%s modal=%s", mm.Screen(), mm.ModalKind())
+	}
+
+	// Primary action: open pick and enter → form flow for revise.
+	mm = applyKeys(t, mm, "tab")
+	for mm.HistCursor() > 0 {
+		mm = applyKeys(t, mm, "up")
+	}
+	mm = applyKeys(t, mm, "tab") // input; hist on user
+	mm = typeText(t, mm, "/revise")
+	mm = applyKeys(t, mm, "enter")
+	if mm.ModalKind() != app.ModalPickTurn {
+		t.Fatalf("pick again modal=%s screen=%s", mm.ModalKind(), mm.Screen())
+	}
+	mm = applyKeys(t, mm, "enter")
+	if mm.Screen() != app.ScreenTextForm {
+		t.Fatalf("after pick form screen=%s modal=%s", mm.Screen(), mm.ModalKind())
+	}
+	mm = applyKeys(t, mm, "esc")
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatal(mm.Screen())
+	}
+
+	// Branch select primary action: enter switches tip and closes modal.
+	// Create a second branch via edit so LeafTips > 1.
+	path := mm.Session().ActivePath()
+	if len(path) == 0 {
+		t.Fatal("empty path")
+	}
+	// Edit last turn content to fork
+	mm = applyKeys(t, mm, "tab")
+	mm = applyKeys(t, mm, "enter") // edit form on selected
+	if mm.Screen() != app.ScreenTextForm {
+		// fallback slash edit
+		mm = applyKeys(t, mm, "esc")
+		mm = typeText(t, mm, "/edit")
+		mm = applyKeys(t, mm, "enter")
+		if mm.ModalKind() == app.ModalPickTurn {
+			mm = applyKeys(t, mm, "enter")
+		}
+	}
+	if mm.Screen() != app.ScreenTextForm {
+		t.Fatalf("need form to fork, got screen=%s modal=%s", mm.Screen(), mm.ModalKind())
+	}
+	// Submit same content still creates a branch via EditTurn
+	mm = applyKeys(t, mm, "ctrl+s")
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("play=%s", mm.Screen())
+	}
+	mm = typeText(t, mm, "/branch")
+	mm = applyKeys(t, mm, "enter")
+	if mm.ModalKind() != app.ModalBranches {
+		t.Fatalf("modal=%s", mm.ModalKind())
+	}
+	// Select current (enter) closes
+	mm = applyKeys(t, mm, "enter")
+	if mm.ModalKind() != app.ModalNone {
+		t.Fatalf("after branch select modal=%s", mm.ModalKind())
+	}
+	if mm.Screen() != app.ScreenPlay {
+		t.Fatalf("screen=%s", mm.Screen())
+	}
 }
 
 func TestQuitViaSlash(t *testing.T) {
