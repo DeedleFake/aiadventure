@@ -11,9 +11,41 @@ import (
 )
 
 // Message is a chat message for the completions API.
+// Content may be empty when ToolCalls is set (assistant tool-call turns).
+// ToolCallID is set for role "tool" result messages.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
+}
+
+// ToolCall is a model-requested function invocation.
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall holds the function name and JSON-encoded arguments.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// Tool is a function the model may call (OpenAI-compatible chat completions shape).
+type Tool struct {
+	Type     string       `json:"type"`
+	Function ToolFunction `json:"function"`
+}
+
+// ToolFunction describes a callable function and its JSON Schema parameters.
+type ToolFunction struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Parameters is a JSON Schema object (typically map[string]any).
+	Parameters any `json:"parameters,omitempty"`
 }
 
 // ChatRequest is the body for POST /chat/completions.
@@ -22,21 +54,24 @@ type ChatRequest struct {
 	Messages        []Message `json:"messages"`
 	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
 	Stream          bool      `json:"stream,omitempty"`
+	Tools           []Tool    `json:"tools,omitempty"`
+	// ToolChoice is "auto", "none", "required", or a forced-function object.
+	ToolChoice any `json:"tool_choice,omitempty"`
+}
+
+// ChatChoice is one completion alternative.
+type ChatChoice struct {
+	Index        int     `json:"index"`
+	Message      Message `json:"message"`
+	FinishReason string  `json:"finish_reason"`
 }
 
 // ChatResponse is a non-streaming completion response.
 type ChatResponse struct {
-	ID      string `json:"id"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index   int `json:"index"`
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Error *struct {
+	ID      string       `json:"id"`
+	Model   string       `json:"model"`
+	Choices []ChatChoice `json:"choices"`
+	Error   *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
@@ -126,10 +161,34 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	return cr, nil
 }
 
+// AssistantMessage returns the first choice message.
+func (cr ChatResponse) AssistantMessage() Message {
+	if len(cr.Choices) == 0 {
+		return Message{}
+	}
+	return cr.Choices[0].Message
+}
+
 // AssistantText returns the first choice content.
 func (cr ChatResponse) AssistantText() string {
-	if len(cr.Choices) == 0 {
-		return ""
+	return cr.AssistantMessage().Content
+}
+
+// ToolCalls returns tool calls from the first choice, if any.
+func (cr ChatResponse) ToolCalls() []ToolCall {
+	return cr.AssistantMessage().ToolCalls
+}
+
+// HasToolCalls reports whether the first choice requested any tools.
+func (cr ChatResponse) HasToolCalls() bool {
+	return len(cr.ToolCalls()) > 0
+}
+
+// ToolResultMessage builds a role=tool message for a completed tool call.
+func ToolResultMessage(callID, content string) Message {
+	return Message{
+		Role:       "tool",
+		ToolCallID: callID,
+		Content:    content,
 	}
-	return cr.Choices[0].Message.Content
 }

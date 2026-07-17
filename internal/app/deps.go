@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -76,7 +77,12 @@ func (d *Deps) AuthStatus() string {
 	return "signed in (expired)"
 }
 
-// SendUserMessage appends a user turn, calls the AI, and appends the reply.
+// maxToolRounds caps tool-call → re-complete loops per user message.
+const maxToolRounds = 4
+
+// SendUserMessage appends a user turn, calls the AI (with phase tools when
+// brainstorming), runs any tool calls (e.g. start_adventure), and appends the
+// final assistant reply to the session transcript.
 func (d *Deps) SendUserMessage(ctx context.Context, s *session.Session, text string) error {
 	if _, err := s.Append(session.RoleUser, text); err != nil {
 		return err
@@ -84,25 +90,95 @@ func (d *Deps) SendUserMessage(ctx context.Context, s *session.Session, text str
 	if err := d.Store.Save(s); err != nil {
 		return err
 	}
-	msgs := prompt.BuildMessages(s)
 	model, effort := s.Model, s.Effort
 	if model == "" {
 		model, effort = d.Cfg.Model, d.Cfg.Effort
 		s.Model, s.Effort = model, effort
 	}
-	req := xai.BuildChatRequest(model, effort, msgs)
-	resp, err := d.HTTP.Chat(ctx, req)
+
+	msgs := prompt.BuildMessages(s)
+	for range maxToolRounds {
+		req := xai.BuildChatRequest(model, effort, msgs)
+		req.Tools = prompt.ToolsForPhase(s.Phase)
+		resp, err := d.HTTP.Chat(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		if !resp.HasToolCalls() {
+			content := trimSpace(resp.AssistantText())
+			if content == "" {
+				return fmt.Errorf("empty assistant response")
+			}
+			if _, err := s.Append(session.RoleAssistant, content); err != nil {
+				return err
+			}
+			return d.Store.Save(s)
+		}
+
+		// Execute tools; tool-call turns stay in the API message list only
+		// (not in the story transcript). After a phase change, rebuild so the
+		// next completion uses the adventure system prompt and no tools.
+		phaseBefore := s.Phase
+		asst := resp.AssistantMessage()
+		if asst.Role == "" {
+			asst.Role = "assistant"
+		}
+		msgs = append(msgs, asst)
+
+		for _, tc := range resp.ToolCalls() {
+			result := d.executeTool(ctx, s, tc)
+			msgs = append(msgs, xai.ToolResultMessage(tc.ID, result))
+		}
+
+		if s.Phase != phaseBefore {
+			msgs = prompt.BuildMessages(s)
+		}
+	}
+	return fmt.Errorf("tool loop exceeded %d rounds", maxToolRounds)
+}
+
+// executeTool runs a single model tool call and returns JSON text for the tool role.
+func (d *Deps) executeTool(_ context.Context, s *session.Session, tc xai.ToolCall) string {
+	switch tc.Function.Name {
+	case prompt.ToolStartAdventure:
+		return d.execStartAdventure(s, tc)
+	default:
+		return toolJSON(map[string]any{
+			"ok":    false,
+			"error": fmt.Sprintf("unknown tool %q", tc.Function.Name),
+		})
+	}
+}
+
+func (d *Deps) execStartAdventure(s *session.Session, tc xai.ToolCall) string {
+	_ = tc // arguments reserved for future use (e.g. reason logging)
+	if s.Phase == session.PhaseAdventure {
+		return toolJSON(map[string]any{
+			"ok":      true,
+			"phase":   string(session.PhaseAdventure),
+			"message": "already in adventure phase",
+		})
+	}
+	if err := s.SetPhase(session.PhaseAdventure); err != nil {
+		return toolJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	if err := d.Store.Save(s); err != nil {
+		return toolJSON(map[string]any{"ok": false, "error": err.Error()})
+	}
+	return toolJSON(map[string]any{
+		"ok":      true,
+		"phase":   string(session.PhaseAdventure),
+		"message": "Phase is now adventure. Narrate the opening scene based on the established setup, then wait for the player's first action.",
+	})
+}
+
+func toolJSON(v any) string {
+	b, err := json.Marshal(v)
 	if err != nil {
-		return err
+		return `{"ok":false,"error":"marshal tool result"}`
 	}
-	content := trimSpace(resp.AssistantText())
-	if content == "" {
-		return fmt.Errorf("empty assistant response")
-	}
-	if _, err := s.Append(session.RoleAssistant, content); err != nil {
-		return err
-	}
-	return d.Store.Save(s)
+	return string(b)
 }
 
 // ReviseAssistantTurn asks the AI to rewrite an assistant turn and returns the draft text.

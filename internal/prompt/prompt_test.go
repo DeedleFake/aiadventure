@@ -35,6 +35,33 @@ func TestBuildMessagesAdventurePhase(t *testing.T) {
 	if !strings.Contains(msgs[0].Content, "narrator") {
 		t.Fatalf("adventure system prompt missing: %s", msgs[0].Content)
 	}
+	if !strings.Contains(msgs[0].Content, "opening scene") {
+		t.Fatalf("adventure system should instruct opening scene: %s", msgs[0].Content)
+	}
+}
+
+func TestBuildMessagesBrainstormStaysInPlanning(t *testing.T) {
+	s := session.New("T", "m", "")
+	msgs := prompt.BuildMessages(s)
+	if !strings.Contains(msgs[0].Content, "collaborative design") && !strings.Contains(msgs[0].Content, "design mode") {
+		t.Fatalf("brainstorm should stay in design mode: %s", msgs[0].Content)
+	}
+	if !strings.Contains(msgs[0].Content, prompt.ToolStartAdventure) {
+		t.Fatalf("brainstorm should mention %s tool: %s", prompt.ToolStartAdventure, msgs[0].Content)
+	}
+	if strings.Contains(msgs[0].Content, "be prepared to narrate the opening scene") {
+		t.Fatal("brainstorm must not ask the model to narrate openings while still planning")
+	}
+}
+
+func TestToolsForPhase(t *testing.T) {
+	tools := prompt.ToolsForPhase(session.PhaseBrainstorm)
+	if len(tools) != 1 || tools[0].Function.Name != prompt.ToolStartAdventure {
+		t.Fatalf("brainstorm tools=%+v", tools)
+	}
+	if prompt.ToolsForPhase(session.PhaseAdventure) != nil {
+		t.Fatal("adventure should have no tools")
+	}
 }
 
 func TestBuildRevisionMessages(t *testing.T) {
