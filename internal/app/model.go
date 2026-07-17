@@ -157,6 +157,12 @@ func (m Model) Focus() FocusArea { return m.focus }
 // ModalKind returns the active modal (for tests).
 func (m Model) ModalKind() Modal { return m.modal }
 
+// PlayInputValue returns the play prompt text (for tests).
+func (m Model) PlayInputValue() string { return m.playInput.Value() }
+
+// Size returns the last WindowSize width and height (for tests).
+func (m Model) Size() (width, height int) { return m.width, m.height }
+
 // Busy reports whether an async op is running.
 func (m Model) Busy() bool { return m.busy }
 
@@ -518,14 +524,24 @@ func (m Model) renderWithCenteredModal(base string) string {
 	}
 	boxW := min(60, max(30, m.width-8))
 	box := modalStyle.Width(boxW).Render(content)
-	// Layer centered modal over the main session surface (backdrop remains visible).
+	// Single terminal-sized frame. The previous composition stacked
+	// Place(width, ~height, modal) + "\n" + base, producing ~2× terminal height;
+	// Bubble Tea's standard renderer keeps only the last height lines, which was
+	// the play surface — so the modal was state-active but invisible.
+	w, h := m.width, m.height
+	if w <= 0 {
+		w = boxW + 4
+	}
+	if h <= 0 {
+		h = lipgloss.Height(box)
+	}
 	return lipgloss.Place(
-		m.width, max(m.height, lipgloss.Height(base)),
+		w, h,
 		lipgloss.Center, lipgloss.Center,
 		box,
 		lipgloss.WithWhitespaceChars(" "),
 		lipgloss.WithWhitespaceForeground(lipgloss.Color("238")),
-	) + "\n" + dimStyle.Render("── session underneath ──") + "\n" + base
+	)
 }
 
 func (m Model) viewHeader() string {

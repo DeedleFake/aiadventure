@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -304,15 +305,11 @@ func TestSettingsModalCenteredOverPlay(t *testing.T) {
 		t.Fatalf("modal=%s", mm.ModalKind())
 	}
 	view := mm.View()
-	// Overlay includes settings content; session underneath marker from renderWithCenteredModal
 	if !strings.Contains(view, "Settings") && !strings.Contains(view, "Select model") {
 		t.Fatalf("missing settings: %s", view)
 	}
-	if !strings.Contains(view, "session underneath") && !strings.Contains(view, "unsaved") {
-		// Either the backdrop note or residual play content should indicate overlay design.
-		// The Place-based modal always appends the session underneath note.
-		t.Fatalf("expected overlay composition: %s", view)
-	}
+	// Frame must fit the terminal so Bubble Tea does not clip the modal away.
+	assertModalVisibleInTerminal(t, mm)
 
 	// Change effort preference through modal and ensure config persists.
 	mm = applyKeys(t, mm, "enter") // model → effort for grok-4.5
@@ -326,6 +323,111 @@ func TestSettingsModalCenteredOverPlay(t *testing.T) {
 	// Config file should exist
 	if _, err := config.Load(deps.Paths, config.Options{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// visibleTerminalWindow returns the lines Bubble Tea's standard renderer keeps:
+// when View() exceeds terminal height, only the last height lines are painted.
+func visibleTerminalWindow(view string, height int) string {
+	lines := strings.Split(view, "\n")
+	// Split leaves a trailing empty element when view ends with '\n'; Place often does.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if height > 0 && len(lines) > height {
+		lines = lines[len(lines)-height:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func assertModalVisibleInTerminal(t *testing.T, mm app.Model) {
+	t.Helper()
+	_, height := mm.Size()
+	view := mm.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	// Open-modal View must not overshoot height enough to push modal out of the paint window.
+	if height > 0 && len(lines) > height {
+		t.Fatalf("modal View has %d lines > terminal height %d (would clip top/modal)", len(lines), height)
+	}
+	visible := visibleTerminalWindow(view, height)
+	// Also check the first-height window (plan acceptance: content in first height lines).
+	first := view
+	if height > 0 {
+		fl := strings.Split(view, "\n")
+		if len(fl) > height {
+			fl = fl[:height]
+		}
+		first = strings.Join(fl, "\n")
+	}
+	hasSettings := strings.Contains(visible, "Settings") || strings.Contains(visible, "Select model") ||
+		strings.Contains(visible, "Effort") || strings.Contains(visible, "Rename")
+	hasFirst := strings.Contains(first, "Settings") || strings.Contains(first, "Select model") ||
+		strings.Contains(first, "Effort") || strings.Contains(first, "Rename")
+	if !hasSettings && !hasFirst {
+		t.Fatalf("modal text missing from visible terminal window (height=%d):\n%s", height, visible)
+	}
+	// Catalog model labels should show in settings
+	if mm.ModalKind() == app.ModalSettings {
+		if !strings.Contains(visible, "grok") && !strings.Contains(first, "grok") &&
+			!strings.Contains(visible, "Grok") && !strings.Contains(first, "Grok") {
+			// At least one catalog entry or "model" label
+			if !strings.Contains(strings.ToLower(visible), "model") &&
+				!strings.Contains(strings.ToLower(first), "model") {
+				t.Fatalf("settings catalog missing from visible window:\n%s", visible)
+			}
+		}
+	}
+}
+
+// TestModalVisibleWithinTerminalHeight gates the invisible-modal bug for /model and /settings
+// at common terminal sizes: modal state active AND content painted in the height window.
+func TestModalVisibleWithinTerminalHeight(t *testing.T) {
+	sizes := []struct{ w, h int }{
+		{80, 24},
+		{100, 40},
+	}
+	commands := []string{"/model", "/settings"}
+
+	for _, sz := range sizes {
+		for _, cmd := range commands {
+			t.Run(fmt.Sprintf("%s_%dx%d", strings.TrimPrefix(cmd, "/"), sz.w, sz.h), func(t *testing.T) {
+				deps := testDeps(t)
+				mm := app.NewModel(deps, context.Background())
+				mm, _ = upd(t, mm, tea.WindowSizeMsg{Width: sz.w, Height: sz.h})
+
+				mm = typeText(t, mm, cmd)
+				mm = applyKeys(t, mm, "enter")
+				if mm.ModalKind() != app.ModalSettings {
+					t.Fatalf("modal=%s want settings after %s", mm.ModalKind(), cmd)
+				}
+				assertModalVisibleInTerminal(t, mm)
+
+				// Non-escape keys must not leak into play input.
+				before := mm.PlayInputValue()
+				mm = applyKeys(t, mm, "x", "y", "z")
+				if mm.ModalKind() != app.ModalSettings {
+					t.Fatalf("modal closed by typed chars, got %s", mm.ModalKind())
+				}
+				if mm.PlayInputValue() != before {
+					t.Fatalf("play input leaked under modal: got %q want %q", mm.PlayInputValue(), before)
+				}
+				// Still visible after key noise
+				assertModalVisibleInTerminal(t, mm)
+
+				// Escape closes modal and restores play input handling.
+				mm = applyKeys(t, mm, "esc")
+				if mm.ModalKind() != app.ModalNone {
+					t.Fatalf("after esc modal=%s want none", mm.ModalKind())
+				}
+				mm = applyKeys(t, mm, "h", "i")
+				if !strings.Contains(mm.PlayInputValue(), "hi") {
+					t.Fatalf("play input not usable after esc: %q", mm.PlayInputValue())
+				}
+			})
+		}
 	}
 }
 
